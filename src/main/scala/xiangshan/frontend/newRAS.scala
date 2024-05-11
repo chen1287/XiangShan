@@ -22,18 +22,19 @@ import utils._
 import utility._
 import xiangshan._
 import xiangshan.frontend._
-
+// 定义了一个名为RAS项，它包含两个字段：retAddr（返回地址）和ctr（嵌套调用函数的层级）。此外，定义了一个=/=方法，用于比较两个RASEntry实例是否不同。
 class RASEntry()(implicit p: Parameters) extends XSBundle {
     val retAddr = UInt(VAddrBits.W)
-    val ctr = UInt(8.W) // layer of nested call functions
+    val ctr = UInt(8.W) // 函数嵌套层数
     def =/=(that: RASEntry) = this.retAddr =/= that.retAddr || this.ctr =/= that.ctr
 }
-
-class RASPtr(implicit p: Parameters) extends CircularQueuePtr[RASPtr](
+// RASPtr类是一个循环队列指针，用于管理RAS中的条目。它包含两个字段：flag（标志位）和value（值）。flag用于标识指针是否有效，value用于存储指针的值。RASPtr类还定义了一个apply方法，用于创建RASPtr实例，以及一个inverse方法，用于创建一个与指定RASPtr实例相反的实例。
+class RASPtr(implicit p: Parameters) extends CircuularQueuePtr[RASPtr](
   p => p(XSCoreParamsKey).RasSpecSize
 ){
 }
 
+// 赋值
 object RASPtr {
   def apply(f: Bool, v: UInt)(implicit p: Parameters): RASPtr = {
     val ptr = Wire(new RASPtr)
@@ -41,17 +42,19 @@ object RASPtr {
     ptr.value := v
     ptr
   }
+  // 状态翻转
   def inverse(ptr: RASPtr)(implicit p: Parameters): RASPtr = {
     apply(!ptr.flag, ptr.value)
   }
 }
 
+
 class RASMeta(implicit p: Parameters) extends XSBundle {
-  val ssp = UInt(log2Up(RasSize).W)
-  val sctr = UInt(RasCtrSize.W)
-  val TOSW = new RASPtr
-  val TOSR = new RASPtr
-  val NOS = new RASPtr
+val ssp = UInt(log2Up(RasSize).W) // 当前的栈指针
+  val sctr = UInt(RasCtrSize.W) // 追踪嵌套的层级
+  val TOSW = new RASPtr // RAS推测栈写指针
+  val TOSR = new RASPtr // RAS推测栈读指针
+  val NOS = new RASPtr  // RAS栈顶指针
 }
 
 object RASMeta {
@@ -66,13 +69,13 @@ object RASMeta {
   }
 }
 
-class RASDebug(implicit p: Parameters) extends XSBundle {
+class RASDebug(implicit p: Parameters) extends XSBundle { // 用于调试的RASDebug类，包含两个字段：commit_stack（提交栈）和spec_nos（推测栈指针）。commit_stack用于存储提交栈的条目，spec_nos用于存储推测栈指针。
   val spec_queue = Output(Vec(RasSpecSize, new RASEntry))
   val spec_nos = Output(Vec(RasSpecSize, new RASPtr))
   val commit_stack = Output(Vec(RasSize, new RASEntry))
 }
 
-class RAS(implicit p: Parameters) extends BasePredictor {
+class RAS(implicit p: Parameters) extends BasePredictor { // RAS 类继承自 BasePredictor 类，用于实现函数调用的返回地址栈（Return Address Stack，RAS）。
   override val meta_size = WireInit(0.U.asTypeOf(new RASMeta)).getWidth
 
   object RASEntry {
@@ -87,71 +90,79 @@ class RAS(implicit p: Parameters) extends BasePredictor {
 
   class RASStack(rasSize: Int, rasSpecSize: Int) extends XSModule with HasCircularQueuePtrHelper {
     val io = IO(new Bundle {
-      val spec_push_valid = Input(Bool())
-      val spec_pop_valid = Input(Bool())
-      val spec_push_addr = Input(UInt(VAddrBits.W))
+      val spec_push_valid = Input(Bool()) //  进行PUSH操作
+      val spec_pop_valid = Input(Bool()) //  进行POP操作
+      val spec_push_addr = Input(UInt(VAddrBits.W)) //  PUSH的地址
       // for write bypass between s2 and s3
 
-      val s2_fire = Input(Bool())
-      val s3_fire = Input(Bool())
-      val s3_cancel = Input(Bool())
-      val s3_meta = Input(new RASMeta)
-      val s3_missed_pop = Input(Bool())
-      val s3_missed_push = Input(Bool())
-      val s3_pushAddr = Input(UInt(VAddrBits.W))
-      val spec_pop_addr = Output(UInt(VAddrBits.W))
+      val s2_fire = Input(Bool()) // s2阶段是否有效
+      val s3_fire = Input(Bool()) // s3阶段是否有效
+      val s3_cancel = Input(Bool()) // S3的信号表示需要撤销S2的操作
+      val s3_meta = Input(new RASMeta)  // S3需要S2时的现场信息
+      val s3_missed_pop = Input(Bool()) // S3是否需要再次POP
+      val s3_missed_push = Input(Bool())  // S3是否需要再次PUSH
+      val s3_pushAddr = Input(UInt(VAddrBits.W))  // PUSH操作正确
+      val spec_pop_addr = Output(UInt(VAddrBits.W)) // POP操作正确
 
-      val commit_push_valid = Input(Bool())
-      val commit_pop_valid = Input(Bool())
-      val commit_push_addr = Input(UInt(VAddrBits.W))
-      val commit_meta_TOSW = Input(new RASPtr)
-      val commit_meta_TOSR = Input(new RASPtr)
+      val commit_push_valid = Input(Bool()) // 
+      val commit_pop_valid = Input(Bool())  
+      val commit_push_addr = Input(UInt(VAddrBits.W)) // Push的正确地址
+      val commit_meta_TOSW = Input(new RASPtr)  // 之前预测时候的现场信息TOSW
+      val commit_meta_TOSR = Input(new RASPtr)  // 之前预测时候的现场信息TOSR
+
+      // Debug的时候输出的信号
       // for debug purpose only
+
       val commit_meta_ssp = Input(UInt(log2Up(RasSize).W))
       val commit_meta_sctr = Input(UInt(RasCtrSize.W))
 
-      val redirect_valid = Input(Bool())
-      val redirect_isCall = Input(Bool())
-      val redirect_isRet = Input(Bool())
-      val redirect_meta_ssp = Input(UInt(log2Up(RasSize).W))
-      val redirect_meta_sctr = Input(UInt(RasCtrSize.W))
-      val redirect_meta_TOSW = Input(new RASPtr)
-      val redirect_meta_TOSR = Input(new RASPtr)
-      val redirect_meta_NOS = Input(new RASPtr)
-      val redirect_callAddr = Input(UInt(VAddrBits.W))
+      val redirect_valid = Input(Bool())  // 重定向是否有效
+      val redirect_isCall = Input(Bool()) // 重定向是否是CALL
+      val redirect_isRet = Input(Bool())  // 重定向是否是RET
+      val redirect_meta_ssp = Input(UInt(log2Up(RasSize).W))  // 重定向时的现场信息ssp
+      val redirect_meta_sctr = Input(UInt(RasCtrSize.W))  // 重定向时的现场信息sctr
+      val redirect_meta_TOSW = Input(new RASPtr)  // 重定向时的现场信息TOSW
+      val redirect_meta_TOSR = Input(new RASPtr)  // 重定向时的现场信息TOSR
+      val redirect_meta_NOS = Input(new RASPtr) // 重定向时的现场信息NOS
+      val redirect_callAddr = Input(UInt(VAddrBits.W))  // 重定向时的CALL地址
 
-      val ssp = Output(UInt(log2Up(RasSize).W))
-      val sctr = Output(UInt(RasCtrSize.W))
-      val nsp = Output(UInt(log2Up(RasSize).W))
-      val TOSR = Output(new RASPtr)
-      val TOSW = Output(new RASPtr)
-      val NOS = Output(new RASPtr)
-      val BOS = Output(new RASPtr)
+      val ssp = Output(UInt(log2Up(RasSize).W)) // 栈指针
+      val sctr = Output(UInt(RasCtrSize.W)) // 追踪嵌套的层级
+      val nsp = Output(UInt(log2Up(RasSize).W)) // 下一个栈指针
+      val TOSR = Output(new RASPtr) // RAS 推测栈读指针
+      val TOSW = Output(new RASPtr) // RAS 推测栈写指针
+      val NOS = Output(new RASPtr)  // RAS栈顶指针
+      val BOS = Output(new RASPtr)  // 循环数组起始标记
 
       val debug = new RASDebug
     })
 
-    val commit_stack = RegInit(VecInit(Seq.fill(RasSize)(RASEntry(0.U, 0.U))))
-    val spec_queue = RegInit(VecInit(Seq.fill(rasSpecSize)(RASEntry(0.U, 0.U))))
-    val spec_nos = RegInit(VecInit(Seq.fill(rasSpecSize)(RASPtr(false.B, 0.U))))
+    val commit_stack = RegInit(VecInit(Seq.fill(RasSize)(RASEntry(0.U, 0.U))))  // 提交栈
+    val spec_queue = RegInit(VecInit(Seq.fill(rasSpecSize)(RASEntry(0.U, 0.U))))  // 预测栈
+    val spec_nos = RegInit(VecInit(Seq.fill(rasSpecSize)(RASPtr(false.B, 0.U))))  // 预测栈指针
 
-    val nsp = RegInit(0.U(log2Up(rasSize).W))
-    val ssp = RegInit(0.U(log2Up(rasSize).W))
+    val nsp = RegInit(0.U(log2Up(rasSize).W)) // commit栈顶，会被ssp覆盖
+    val ssp = RegInit(0.U(log2Up(rasSize).W)) // commit栈顶指针
 
-    val sctr = RegInit(0.U(RasCtrSize.W))
-    val TOSR = RegInit(RASPtr(true.B, (RasSpecSize - 1).U))
-    val TOSW = RegInit(RASPtr(false.B, 0.U))
-    val BOS = RegInit(RASPtr(false.B, 0.U))
+    val sctr = RegInit(0.U(RasCtrSize.W)) // RAS推测栈栈顶递归计数 Counter
+    val TOSR = RegInit(RASPtr(true.B, (RasSpecSize - 1).U)) // RAS 推测栈读指针
+    val TOSW = RegInit(RASPtr(false.B, 0.U))  // RAS 推测栈写指针
+    val BOS = RegInit(RASPtr(false.B, 0.U)) // 循环数组起始标记
 
-    val spec_overflowed = RegInit(false.B)
+    val spec_overflowed = RegInit(false.B)  // 标记预测栈是否溢出
 
-    val writeBypassEntry = Reg(new RASEntry)
-    val writeBypassNos = Reg(new RASPtr)
+    val writeBypassEntry = Reg(new RASEntry)  // 写回绕过机制
+    val writeBypassNos = Reg(new RASPtr)  // 写回绕过指针
 
-    val writeBypassValid = RegInit(0.B)
-    val writeBypassValidWire = Wire(Bool())
+    val writeBypassValid = RegInit(0.B) // 写回绕过条目是否有效
+    val writeBypassValidWire = Wire(Bool()) // 写回绕过有效信号
 
-    def TOSRinRange(currentTOSR: RASPtr, currentTOSW: RASPtr) = {
+    /* 在实际的硬件设计中，writeBypassValid 可能与 writeBypassValidWire 相关联，
+    后者可能是前者的驱动信号之一。例如，writeBypassValidWire 可以根据当前周期的输入
+    条件计算出一个值，然后这个值可以在时钟的下一个上升沿被用来更新 writeBypassValid 寄存器。
+    这样的设计允许硬件在保持状态的同时，也能够响应即时的逻辑变化。*/
+
+    def TOSRinRange(currentTOSR: RASPtr, currentTOSW: RASPtr) = { // 判断TOSR是否在范围内
       val inflightValid = WireInit(false.B)
       // if in range, TOSR should be no younger than BOS and strictly younger than TOSW
       when (!isBefore(currentTOSR, BOS) && isBefore(currentTOSR, currentTOSW)) {
@@ -160,11 +171,11 @@ class RAS(implicit p: Parameters) extends BasePredictor {
       inflightValid
     }
 
-    def getCommitTop(currentSsp: UInt) = {
+    def getCommitTop(currentSsp: UInt) = {  // 获取提交栈顶
       commit_stack(currentSsp)
     }
 
-    def getTopNos(currentTOSR: RASPtr, allowBypass: Boolean):RASPtr = {
+    def getTopNos(currentTOSR: RASPtr, allowBypass: Boolean):RASPtr = { // 获取栈顶指针
       val ret = Wire(new RASPtr)
       if (allowBypass){
         when (writeBypassValid) {
@@ -177,19 +188,19 @@ class RAS(implicit p: Parameters) extends BasePredictor {
       }
       ret
     }
-
+    // 获取栈顶
     def getTop(currentSsp: UInt, currentSctr: UInt, currentTOSR: RASPtr, currentTOSW: RASPtr, allowBypass: Boolean):RASEntry = {
       val ret = Wire(new RASEntry)
-      if (allowBypass) {
-        when (writeBypassValid) {
-          ret := writeBypassEntry
-        } .elsewhen (TOSRinRange(currentTOSR, currentTOSW)) {
-          ret := spec_queue(currentTOSR.value)
-        } .otherwise {
-          ret := getCommitTop(currentSsp)
+      if (allowBypass) {  // 如果允许数据旁路
+        when (writeBypassValid) { // 开启数据旁路
+          ret := writeBypassEntry // 返回旁路数据
+        } .elsewhen (TOSRinRange(currentTOSR, currentTOSW)) { // 如果TOSR在范围内
+          ret := spec_queue(currentTOSR.value)  // 返回预测栈顶数据
+        } .otherwise {  // 如果TOSR不在范围内
+          ret := getCommitTop(currentSsp) // 返回提交栈顶数据
         }
       } else {
-        when (TOSRinRange(currentTOSR, currentTOSW)) {
+        when (TOSRinRange(currentTOSR, currentTOSW)) {  // 如果TOSR在范围内
           ret := spec_queue(currentTOSR.value)
         } .otherwise {
           ret := getCommitTop(currentSsp)
@@ -199,120 +210,158 @@ class RAS(implicit p: Parameters) extends BasePredictor {
       ret
     }
 
+
+
     // it would be unsafe for specPtr manipulation if specSize is not power of 2
+    /* 在硬件设计中，特别是涉及到循环缓冲区或队列时，通常要求其大小是 2 的幂。这是因为当大
+    小是 2 的幂时，可以通过模运算（%）来实现循环缓冲区的索引，而不用担心整数溢出或缓冲区边
+    界错误的问题。模运算可以确保索引在达到缓冲区末尾时循环回到开始位置。
+
+    例如，如果 specSize 是 16（2 的 4 次方），那么当 specPtr 达到 16 时，通过模运算 
+    specPtr % 16 会得到 0，这是一个安全的循环。如果 specSize 不是 2 的幂，
+    比如 15，模运算可能无法正确地实现循环，因为 15 的任何小于它的 2 的幂（如 8 或 4）
+    都不能整除它，这可能导致指针操作中的逻辑错误。
+
+    在 Chisel 代码中，为了确保 specSize 是 2 的幂， 可能会使用 log2Up 函数来计算所需的位
+    宽，这个函数会向上取整到最接近的 2 的幂。例如：
+
+    val specSize = 16 // 这是一个 2 的幂
+    val specPtrWidth = log2Up(specSize) // specPtrWidth 将会是 4
+    在这个例子中，specPtrWidth 计算出来是 4，因为 16 是 2 的 4 次方。这意味着 
+    specPtr 需要 4 位来表示，足以循环遍历整个队列的大小。
+
+    总结来说，队列大小必须是 2 的幂的重要性，以确保指针操作的安全性和正确性。
+    */
     assert(log2Up(RasSpecSize) == log2Floor(RasSpecSize))
-    def ctrMax = ((1l << RasCtrSize) - 1).U
-    def ptrInc(ptr: UInt) = ptr + 1.U
-    def ptrDec(ptr: UInt) = ptr - 1.U
 
-    def specPtrInc(ptr: RASPtr) = ptr + 1.U
-    def specPtrDec(ptr: RASPtr) = ptr - 1.U
+    def ctrMax = ((1l << RasCtrSize) - 1).U // 函数嵌套层数计数器最大值
+    def ptrInc(ptr: UInt) = ptr + 1.U // 指针自增
+    def ptrDec(ptr: UInt) = ptr - 1.U // 指针自减
 
-
-
+    def specPtrInc(ptr: RASPtr) = ptr + 1.U // 预测栈指针自增
+    def specPtrDec(ptr: RASPtr) = ptr - 1.U // 预测栈指针自减
 
 
-
-    when (io.redirect_valid && io.redirect_isCall) {
-      writeBypassValidWire := true.B
-      writeBypassValid := true.B
-    } .elsewhen (io.redirect_valid) {
+    when (io.redirect_valid && io.redirect_isCall) {  // 如果重定向有效且是CALL
+      writeBypassValidWire := true.B  // 写回绕过有效信号为真
+      writeBypassValid := true.B  // 写回绕过有效为真
+    } .elsewhen (io.redirect_valid) { // 如果仅重定向有效
       // clear current top writeBypass if doing redirect
+      writeBypassValidWire := false.B // 写回绕过有效信号为假
+      writeBypassValid := false.B   // 写回绕过有效为假
+    } .elsewhen (io.s2_fire) {  // s2阶段的预测结果已经准备好
+      writeBypassValidWire := io.spec_push_valid  // 写回绕过有效信号为PUSH有效信号
+      writeBypassValid := io.spec_push_valid  // 写回绕过有效为PUSH有效
+    } .elsewhen (io.s3_fire) {  // s3阶段的预测结果已经准备好
       writeBypassValidWire := false.B
       writeBypassValid := false.B
-    } .elsewhen (io.s2_fire) {
-      writeBypassValidWire := io.spec_push_valid
-      writeBypassValid := io.spec_push_valid
-    } .elsewhen (io.s3_fire) {
-      writeBypassValidWire := false.B
-      writeBypassValid := false.B
-    } .otherwise {
+    } .otherwise {  // 其他情况，写回绕过有效信号为假
       writeBypassValidWire := writeBypassValid
     }
 
 
+    val topEntry = getTop(ssp, sctr, TOSR, TOSW, true)  // 获取栈顶
+    val topNos = getTopNos(TOSR, true)  // 获取栈顶指针
+    val redirectTopEntry = getTop(io.redirect_meta_ssp, io.redirect_meta_sctr, io.redirect_meta_TOSR, io.redirect_meta_TOSW, false) // 获取重定向时的栈顶
+    val redirectTopNos = io.redirect_meta_NOS // 获取重定向时的栈顶指针
+    val s3TopEntry = getTop(io.s3_meta.ssp, io.s3_meta.sctr, io.s3_meta.TOSR, io.s3_meta.TOSW, false) // 获取S3时的栈顶
+    val s3TopNos = io.s3_meta.NOS // 获取S3时的栈顶指针
 
-    val topEntry = getTop(ssp, sctr, TOSR, TOSW, true)
-    val topNos = getTopNos(TOSR, true)
-    val redirectTopEntry = getTop(io.redirect_meta_ssp, io.redirect_meta_sctr, io.redirect_meta_TOSR, io.redirect_meta_TOSW, false)
-    val redirectTopNos = io.redirect_meta_NOS
-    val s3TopEntry = getTop(io.s3_meta.ssp, io.s3_meta.sctr, io.s3_meta.TOSR, io.s3_meta.TOSW, false)
-    val s3TopNos = io.s3_meta.NOS
-
-    val writeEntry = Wire(new RASEntry)
-    val writeNos = Wire(new RASPtr)
+    val writeEntry = Wire(new RASEntry) // 写入时的栈条目
+    val writeNos = Wire(new RASPtr) // 写入时的栈指针
+    // 如果重定向有效且是CALL，写入时的栈条目为重定向时的栈顶
     writeEntry.retAddr := Mux(io.redirect_valid && io.redirect_isCall,  io.redirect_callAddr, io.spec_push_addr)
+
+    // 嵌套层数计数器更新
     writeEntry.ctr := Mux(io.redirect_valid && io.redirect_isCall,
       Mux(redirectTopEntry.retAddr === io.redirect_callAddr && redirectTopEntry.ctr < ctrMax, io.redirect_meta_sctr + 1.U, 0.U),
       Mux(topEntry.retAddr === io.spec_push_addr && topEntry.ctr < ctrMax, sctr + 1.U, 0.U))
 
+    // 重定向&&Call，写入时的栈指针为重定向时的栈顶指针
     writeNos := Mux(io.redirect_valid && io.redirect_isCall,
       io.redirect_meta_NOS, TOSR)
-
+    // 重定向&&Call 或者 spec_push有效时，写旁路条目和写旁路指针更新
     when (io.spec_push_valid || (io.redirect_valid && io.redirect_isCall)) {
       writeBypassEntry := writeEntry
       writeBypassNos := writeNos
     }
 
-    val realPush = Wire(Bool())
-    val realWriteEntry = Wire(new RASEntry)
-    val timingTop = RegInit(0.U.asTypeOf(new RASEntry))
-    val timingNos = RegInit(0.U.asTypeOf(new RASPtr))
+    val realPush = Wire(Bool()) // 真正的Push信号
+    val realWriteEntry = Wire(new RASEntry) // 真正的写入条目
+    val timingTop = RegInit(0.U.asTypeOf(new RASEntry)) // 正在处理的栈条目？
+    val timingNos = RegInit(0.U.asTypeOf(new RASPtr)) // 正在处理的栈指针？
 
-    when (writeBypassValidWire) {
-      when ((io.redirect_valid && io.redirect_isCall) || io.spec_push_valid) {
-        timingTop := writeEntry
-        timingNos := writeNos
+    when (writeBypassValidWire) { // 写旁路有效信号为真
+      when ((io.redirect_valid && io.redirect_isCall) || io.spec_push_valid) {  // 重定向&&Call 或者 spec_push有效时     
+        timingTop := writeEntry // 正在处理的栈条目为写入条目
+        timingNos := writeNos // 正在处理的栈指针为写入指针
       } .otherwise {
-        timingTop := writeBypassEntry
-        timingNos := writeBypassNos
+        timingTop := writeBypassEntry // 否则，正在处理的栈条目为写旁路条目
+        timingNos := writeBypassNos // 正在处理的栈指针为写旁路指针
       }
-
-    } .elsewhen (io.redirect_valid && io.redirect_isRet) {
+    } .elsewhen (io.redirect_valid && io.redirect_isRet) {  // 重定向&&Ret
       // getTop using redirect Nos as TOSR
-      val popRedSsp = Wire(UInt(log2Up(rasSize).W))
-      val popRedSctr = Wire(UInt(RasCtrSize.W))
-      val popRedTOSR = io.redirect_meta_NOS
-      val popRedTOSW = io.redirect_meta_TOSW
+      val popRedSsp = Wire(UInt(log2Up(rasSize).W)) // 存储重定向时的栈指针
+      val popRedSctr = Wire(UInt(RasCtrSize.W)) // 存储重定向时的栈计数器
+      val popRedTOSR = io.redirect_meta_NOS   // 存储重定向时的栈顶读指针
+      val popRedTOSW = io.redirect_meta_TOSW  // 存储重定向时的栈顶写指针
 
       when (io.redirect_meta_sctr > 0.U) {
+      // 如果重定向元数据中的栈计数器大于 0，说明有有效的嵌套函数调用，
+      // 则使用重定向元数据中的栈指针和栈计数器。
         popRedSctr := io.redirect_meta_sctr - 1.U
         popRedSsp := io.redirect_meta_ssp
       } .elsewhen (TOSRinRange(popRedTOSR, TOSW)) {
+      // 如果当前的 popRedTOSR（即 redirect NOS）在有效范围内，
+      // 则栈指针使用当前栈指针减 1，栈计数器使用当前栈顶读指针指向的条目的计数器。
         popRedSsp := ptrDec(io.redirect_meta_ssp)
         popRedSctr := spec_queue(popRedTOSR.value).ctr
       } .otherwise {
+      // 如果上面的条件都不满足，说明 popRedTOSR 不在有效范围内，
+      // 则栈指针使用当前栈指针减 1，栈计数器使用当前栈指针指向的条目的计数器。
         popRedSsp := ptrDec(io.redirect_meta_ssp)
         popRedSctr := getCommitTop(ptrDec(io.redirect_meta_ssp)).ctr
       }
       // We are deciding top for the next cycle, no need to use bypass here
+      // 使用更新后的栈指针和栈计数器，以及重定向信息获取栈顶条目。
       timingTop := getTop(popRedSsp, popRedSctr, popRedTOSR, popRedTOSW, false)
     } .elsewhen (io.redirect_valid) {
       // Neither call nor ret
+      /* 当前的重定向既不是函数调用（call）也不是函数返回（ret）。
+      在处理器的分支预测逻辑中，这可能意味着发生了一个需要特殊处理的事件，
+      比如一个跳转（jump）或者由于预测错误导致的修正。
+      在这种情况下，timingTop 将被更新为 getTop 返回的值，
+      这代表了在当前重定向操作下 RAS 的栈顶条目。这个更新的栈
+      顶条目将用于后续的流水线阶段，可能包括错误恢复或者跳转目标的解析。
+      */
       val popSsp = io.redirect_meta_ssp
       val popSctr = io.redirect_meta_sctr
       val popTOSR = io.redirect_meta_TOSR
       val popTOSW = io.redirect_meta_TOSW
-
+      // 使用重定向信息获取栈顶条目。
       timingTop := getTop(popSsp, popSctr, popTOSR, popTOSW, false)
 
     } .elsewhen (io.spec_pop_valid) {
       // getTop using current Nos as TOSR
+      // 使用当前的栈顶指针和栈计数器获取栈顶条目。可能是用于回滚？
       val popSsp = Wire(UInt(log2Up(rasSize).W))
       val popSctr = Wire(UInt(RasCtrSize.W))
       val popTOSR = topNos
       val popTOSW = TOSW
 
       when (sctr > 0.U) {
+        // 如果当前的栈计数器大于 0，说明有有效的嵌套函数调用，
+        // 则使用当前的栈指针，栈计数器减一。
         popSctr := sctr - 1.U
         popSsp := ssp
-      } .elsewhen (TOSRinRange(popTOSR, TOSW)) {
+      } .elsewhen (TOSRinRange(popTOSR, TOSW)) {  // NOS在范围内,使用预测栈的信息更新指针和计数器
         popSsp := ptrDec(ssp)
         popSctr := spec_queue(popTOSR.value).ctr
-      } .otherwise {
+      } .otherwise {  // 不在范围内，使用提交栈的信息更新指针和计数器
         popSsp := ptrDec(ssp)
         popSctr := getCommitTop(ptrDec(ssp)).ctr
       }
+      // 根据更新的栈指针和计数器以及当前的NOS和TOSW获取栈顶条目
       // We are deciding top for the next cycle, no need to use bypass here
       timingTop := getTop(popSsp, popSctr, popTOSR, popTOSW, false)
     } .elsewhen (realPush) {
@@ -320,19 +369,20 @@ class RAS(implicit p: Parameters) extends BasePredictor {
       timingTop := realWriteEntry
     } .elsewhen (io.s3_cancel) {
       // s3 is different with s2
+      // S3 和 S2 不同，重定向
       timingTop := getTop(io.s3_meta.ssp, io.s3_meta.sctr, io.s3_meta.TOSR, io.s3_meta.TOSW, false)
-      when (io.s3_missed_push) {
+      when (io.s3_missed_push) {  // S3判断需要再次PUSH
         val writeEntry_s3 = Wire(new RASEntry)
         timingTop := writeEntry_s3
         writeEntry_s3.retAddr := io.s3_pushAddr
         writeEntry_s3.ctr := Mux(timingTop.retAddr === io.s3_pushAddr && io.s3_meta.sctr < ctrMax, io.s3_meta.sctr + 1.U, 0.U)
-      } .elsewhen (io.s3_missed_pop) {
+      } .elsewhen (io.s3_missed_pop) {  // S3判断需要再次POP
         val popRedSsp_s3 = Wire(UInt(log2Up(rasSize).W))
         val popRedSctr_s3 = Wire(UInt(RasCtrSize.W))
         val popRedTOSR_s3 = io.s3_meta.NOS
         val popRedTOSW_s3 = io.s3_meta.TOSW
 
-        when (io.s3_meta.sctr > 0.U) {
+        when (io.s3_meta.sctr > 0.U) {  // 如果S3的栈计数器大于 0
           popRedSctr_s3 := io.s3_meta.sctr - 1.U
           popRedSsp_s3 := io.s3_meta.ssp
         } .elsewhen (TOSRinRange(popRedTOSR_s3, popRedTOSW_s3)) {
@@ -343,10 +393,11 @@ class RAS(implicit p: Parameters) extends BasePredictor {
           popRedSctr_s3 := getCommitTop(ptrDec(io.s3_meta.ssp)).ctr
         }
         // We are deciding top for the next cycle, no need to use bypass here
+        // 使用更新后的栈指针和栈计数器，以及重定向信息获取栈顶条目,不使用旁路
         timingTop := getTop(popRedSsp_s3, popRedSctr_s3, popRedTOSR_s3, popRedTOSW_s3, false)
       }
     } .otherwise {
-      // easy case
+      // easy case 不需要再次push
       val popSsp = ssp
       val popSctr = sctr
       val popTOSR = TOSR
