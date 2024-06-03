@@ -22,7 +22,7 @@ import utils._
 import utility._
 import xiangshan._
 import xiangshan.frontend._
-// 定义了一个名为RAS项，它包含两个字段：retAddr（返回地址）和ctr（嵌套调用函数的层级）。此外，定义了一个=/=方法，用于比较两个RASEntry实例是否不同。
+// 定义了一个名为RAS项，它包含两个字段：retAddr（返回地址）和ctr（递归调用函数的层级）。此外，重载了=/=方法，用于比较两个RASEntry实例是否不同。
 class RASEntry()(implicit p: Parameters) extends XSBundle {
     val retAddr = UInt(VAddrBits.W)
     val ctr = UInt(8.W) // 函数嵌套层数
@@ -97,15 +97,15 @@ class RAS(implicit p: Parameters) extends BasePredictor { // RAS 类继承自 Ba
 
       val s2_fire = Input(Bool()) // s2阶段是否有效
       val s3_fire = Input(Bool()) // s3阶段是否有效
-      val s3_cancel = Input(Bool()) // S3的信号表示需要撤销S2的操作
+      val s3_cancel = Input(Bool()) // S3操作和S2不相同，需要撤销S2的操作
       val s3_meta = Input(new RASMeta)  // S3需要S2时的现场信息
       val s3_missed_pop = Input(Bool()) // S3是否需要再次POP
       val s3_missed_push = Input(Bool())  // S3是否需要再次PUSH
       val s3_pushAddr = Input(UInt(VAddrBits.W))  // s3 PUSH 的地址
       val spec_pop_addr = Output(UInt(VAddrBits.W)) // POP地址
 
-      val commit_push_valid = Input(Bool()) // 提交栈push有效
-      val commit_pop_valid = Input(Bool())  // 提交栈pop有效
+      val commit_push_valid = Input(Bool()) // 提交栈push
+      val commit_pop_valid = Input(Bool())  // 提交栈pop
       val commit_push_addr = Input(UInt(VAddrBits.W)) // 提交栈的push地址，即返回地址
       val commit_meta_TOSW = Input(new RASPtr)  // 之前预测时候的现场信息TOSW
       val commit_meta_TOSR = Input(new RASPtr)  // 之前预测时候的现场信息TOSR
@@ -145,18 +145,17 @@ class RAS(implicit p: Parameters) extends BasePredictor { // RAS 类继承自 Ba
     val ssp = RegInit(0.U(log2Up(rasSize).W)) // commit栈顶指针
 
     val sctr = RegInit(0.U(RasCtrSize.W)) // RAS预测栈栈顶递归计数 Counter
-    val TOSR = RegInit(RASPtr(true.B, (RasSpecSize - 1).U)) // RAS 预测栈读指针
-    val TOSW = RegInit(RASPtr(false.B, 0.U))  // RAS 预测栈写指针
-    val BOS = RegInit(RASPtr(false.B, 0.U)) // 循环数组起始标记
-
+    val TOSR = RegInit(RASPtr(true.B, (RasSpecSize - 1).U)) // 预测栈写入指针
+    val TOSW = RegInit(RASPtr(false.B, 0.U))  // 预测栈内存分配指针
+    val BOS = RegInit(RASPtr(false.B, 0.U)) // 预测栈循环起始标记(栈底指针)
     val spec_overflowed = RegInit(false.B)  // 标记预测栈是否溢出
 
-    val writeBypassEntry = Reg(new RASEntry)  // 写回绕过机制
-    val writeBypassNos = Reg(new RASPtr)  // 写回绕过指针
+    val writeBypassEntry = Reg(new RASEntry)  // 旁路
+    val writeBypassNos = Reg(new RASPtr)  // 旁路指针
 
     val writeBypassValid = RegInit(0.B) // 旁路有效
     val writeBypassValidWire = Wire(Bool()) // 旁路有效线性？
-
+    // kimi给出的回答，在后面给他俩赋值的时候也确实是这么用的，但是他俩赋值每次都一起赋值，这样做是否只是有值不变的效果？
     /* 在实际的硬件设计中，writeBypassValid 可能与 writeBypassValidWire 相关联，
     后者可能是前者的驱动信号之一。例如，writeBypassValidWire 可以根据当前周期的输入
     条件计算出一个值，然后这个值可以在时钟的下一个上升沿被用来更新 writeBypassValid 寄存器。
@@ -210,7 +209,7 @@ class RAS(implicit p: Parameters) extends BasePredictor { // RAS 类继承自 Ba
       ret
     }
 
-
+    // kimi：
     // it would be unsafe for specPtr manipulation if specSize is not power of 2
     /* 在硬件设计中，特别是涉及到循环缓冲区或队列时，通常要求其大小是 2 的幂。这是因为当大
     小是 2 的幂时，可以通过模运算（%）来实现循环缓冲区的索引，而不用担心整数溢出或缓冲区边
@@ -240,7 +239,7 @@ class RAS(implicit p: Parameters) extends BasePredictor { // RAS 类继承自 Ba
     def specPtrInc(ptr: RASPtr) = ptr + 1.U // 预测栈指针自增
     def specPtrDec(ptr: RASPtr) = ptr - 1.U // 预测栈指针自减
 
-
+    // 每次赋值都两个一起赋值一样的值，那最后一个驱动有什么意义吗
     when (io.redirect_valid && io.redirect_isCall) {  // 如果重定向有效且是CALL
       writeBypassValidWire := true.B  // 写回绕过有效信号为真
       writeBypassValid := true.B  // 写回绕过有效为真
@@ -248,16 +247,15 @@ class RAS(implicit p: Parameters) extends BasePredictor { // RAS 类继承自 Ba
       // clear current top writeBypass if doing redirect
       writeBypassValidWire := false.B // 写回绕过有效信号为假
       writeBypassValid := false.B   // 写回绕过有效为假
-    } .elsewhen (io.s2_fire) {  // s2阶段的预测结果已经准备好
-      writeBypassValidWire := io.spec_push_valid  // 写回绕过有效信号为PUSH有效信号
-      writeBypassValid := io.spec_push_valid  // 写回绕过有效为PUSH有效
+    } .elsewhen (io.s2_fire) {  // 没有重定向信号，但是s2阶段的预测结果已经准备好
+      writeBypassValidWire := io.spec_push_valid  // 写回绕过有效信号为push是否有效
+      writeBypassValid := io.spec_push_valid  // 写回绕过有效为push是否有效
     } .elsewhen (io.s3_fire) {  // s3阶段的预测结果已经准备好
       writeBypassValidWire := false.B
       writeBypassValid := false.B
-    } .otherwise {  // 其他情况，旁路有效线性信号等于旁路有效信号
+    } .otherwise {  // 其他情况，由valid wire驱动valid
       writeBypassValidWire := writeBypassValid
     }
-
 
     val topEntry = getTop(ssp, sctr, TOSR, TOSW, true)  // 获取栈顶
     val topNos = getTopNos(TOSR, true)  // 获取栈顶指针
@@ -266,9 +264,9 @@ class RAS(implicit p: Parameters) extends BasePredictor { // RAS 类继承自 Ba
     val s3TopEntry = getTop(io.s3_meta.ssp, io.s3_meta.sctr, io.s3_meta.TOSR, io.s3_meta.TOSW, false) // 获取S3时的栈顶
     val s3TopNos = io.s3_meta.NOS // 获取S3时的栈顶指针
 
-    val writeEntry = Wire(new RASEntry) // 写入时的栈条目
-    val writeNos = Wire(new RASPtr) // 写入时的栈指针
-    // 如果重定向有效且是CALL，写入时的栈条目为重定向的地址，否则为输入的预测栈地址
+    val writeEntry = Wire(new RASEntry) // 要写入的栈条目
+    val writeNos = Wire(new RASPtr) // 要写入的栈指针
+    // 如果重定向有效且是CALL，则要写入重定向数据，否则就是往spec栈里面写
     writeEntry.retAddr := Mux(io.redirect_valid && io.redirect_isCall,  io.redirect_callAddr, io.spec_push_addr)
 
     // 递归嵌套层数计数器更新，重定向（重定向和重定向call）更新重定向嵌套层数，写入更新写入嵌套层数
@@ -290,10 +288,10 @@ class RAS(implicit p: Parameters) extends BasePredictor { // RAS 类继承自 Ba
     val timingTop = RegInit(0.U.asTypeOf(new RASEntry)) // 正在处理的栈条目？
     val timingNos = RegInit(0.U.asTypeOf(new RASPtr)) // 正在处理的栈指针？
 
-    when (writeBypassValidWire) { // 线性旁路信号有效的时候
+    when (writeBypassValidWire) { // wire_旁路信号有效的时候
       when ((io.redirect_valid && io.redirect_isCall) || io.spec_push_valid) {  // 重定向&&Call 或者 spec_push有效时
-        timingTop := writeEntry // 下一个时钟周期的栈条目为写入条目
-        timingNos := writeNos // 下一个时钟周期的栈指针为写入指针
+        timingTop := writeEntry // 正在处理的栈顶为旁路里面的数据
+        timingNos := writeNos // 正在处理的指针为旁路指针
       } .otherwise {
         timingTop := writeBypassEntry // 否则，正在处理的栈条目为写旁路条目
         timingNos := writeBypassNos // 正在处理的栈指针为写旁路指针
@@ -353,10 +351,10 @@ class RAS(implicit p: Parameters) extends BasePredictor { // RAS 类继承自 Ba
         // 则使用当前的栈指针，栈计数器减一。
         popSctr := sctr - 1.U
         popSsp := ssp
-      } .elsewhen (TOSRinRange(popTOSR, TOSW)) {  // 之前预测的栈顶指针还没弹出去
+      } .elsewhen (TOSRinRange(popTOSR, TOSW)) {  // commit栈不为空
         popSsp := ptrDec(ssp)
         popSctr := spec_queue(popTOSR.value).ctr
-      } .otherwise {  // 之前预测的栈顶指针已经commit了
+      } .otherwise {  // commit栈已经为空了
         popSsp := ptrDec(ssp) //pop的指针为当前指针减一
         popSctr := getCommitTop(ptrDec(ssp)).ctr
       }
@@ -407,6 +405,7 @@ class RAS(implicit p: Parameters) extends BasePredictor { // RAS 类继承自 Ba
     val diffTop = Mux(writeBypassValid, writeBypassEntry.retAddr, topEntry.retAddr)
 
     XSPerfAccumulate("ras_top_mismatch", diffTop =/= timingTop.retAddr);
+    // kimi的解释
     /*当RAS（返回地址栈）的顶部条目与预期的顶部条目不一致时，
     这可能是由于栈操作的不匹配或使用仍在处理中的信息更新了提交栈。
     通过监控这种情况，开发者可以诊断和优化硬件的性能问题。*/
@@ -445,7 +444,7 @@ class RAS(implicit p: Parameters) extends BasePredictor { // RAS 类继承自 Ba
     realPush := (io.s3_fire && (!io.s3_cancel && RegEnable(io.spec_push_valid, io.s2_fire) || io.s3_missed_push)) || RegNext(io.redirect_valid && io.redirect_isCall)
     // 真要push的时候，写入条目和指针
     when (realPush) {
-      spec_queue(realWriteAddr.value) := realWriteEntry
+      spec_queue(realWriteAddr.value) := realWriteEntry // realpush的时候进行预测栈的push操作，就像上面的一样，有重定向就写入重定向TOSW，没有重定向就写入现在的TOSW
       spec_nos(realWriteAddr.value) := realNos
     }
     // 预测栈push
@@ -454,13 +453,13 @@ class RAS(implicit p: Parameters) extends BasePredictor { // RAS 类继承自 Ba
       TOSW := specPtrInc(currentTOSW) // 分配内存指针自增
       // spec sp and ctr should always be maintained
       when (topEntry.retAddr === retAddr && currentSctr < ctrMax) { // 压入的地址一样，即递归调用
-        sctr := currentSctr + 1.U // 递归层数自增
+        sctr := currentSctr + 1.U // 递归层数自增,这里没有压栈操作，为什么验证的时候压栈了
       } .otherwise {  // 直接压入新的项，递归嵌套层数为0
         ssp := ptrInc(currentSsp)
         sctr := 0.U
       }
       // if we are draining the capacity of spec queue, force move BOS forward
-      // 如果预测栈的容量用完了，强制移动BOS向前
+      // 如果预测栈的容量用完了，强制移动BOS向前，构成循环使用
       when (specPtrInc(currentTOSW) === BOS) {
         BOS := specPtrInc(BOS)
         spec_overflowed := true.B;
@@ -475,7 +474,7 @@ class RAS(implicit p: Parameters) extends BasePredictor { // RAS 类继承自 Ba
       // TOSR is only maintained when spec queue is not empty
       // 这注释什么意思？没看懂，为什么说预测栈是空的的时候不需要维护TOSR，如果按照姚老师说的TOSR是栈顶指针的话本来就没必要维护，没必要多此一举打个注释吧
       when (TOSRinRange(currentTOSR, currentTOSW)) {
-        TOSR := currentTopNos // currentTopNos 应该是传进来的栈顶指针
+        TOSR := currentTopNos // currentTopNos 传进来的栈顶指针
       }
       // spec sp and ctr should always be maintained
       when (currentSctr > 0.U) {  // 存在递归，嵌套层数-1
@@ -554,7 +553,6 @@ class RAS(implicit p: Parameters) extends BasePredictor { // RAS 类继承自 Ba
     val commit_push_addr = spec_queue(io.commit_meta_TOSW.value).retAddr
 
 
-
     when (io.commit_push_valid) { // 后端发来了call请求
       val nsp_update = Wire(UInt(log2Up(rasSize).W))
       when (io.commit_meta_ssp =/= nsp) {
@@ -564,7 +562,7 @@ class RAS(implicit p: Parameters) extends BasePredictor { // RAS 类继承自 Ba
         nsp_update := nsp
       }
       // if ctr < max && topAddr == push addr, ++ctr, otherwise ++nsp
-      // 按照注释，topAddr == push addr的时候是不用push的，但是验证的时候spec栈是进行了push的，是因为spec栈和commit栈不一样？
+      // 按照注释，topAddr == push addr的时候是不用push的，但是spec栈是进行了push的，是因为spec栈和commit栈不一样？
       when (commitTop.ctr < ctrMax && commitTop.retAddr === commit_push_addr) {
         commit_stack(nsp_update).ctr := commitTop.ctr + 1.U
         nsp := nsp_update
@@ -597,13 +595,13 @@ class RAS(implicit p: Parameters) extends BasePredictor { // RAS 类继承自 Ba
         specPop(io.redirect_meta_ssp, io.redirect_meta_sctr, io.redirect_meta_TOSR, io.redirect_meta_TOSW, redirectTopNos)
       }
     }
-
+    // debug 操作
     io.debug.commit_stack.zipWithIndex.foreach{case (a, i) => a := commit_stack(i)}
     io.debug.spec_nos.zipWithIndex.foreach{case (a, i) => a := spec_nos(i)}
     io.debug.spec_queue.zipWithIndex.foreach{ case (a, i) => a := spec_queue(i)}
   }
-  // RAS 操作
 
+  // RAS 操作
   val stack = Module(new RASStack(RasSize, RasSpecSize)).io
 
   val s2_spec_push = WireInit(false.B)
