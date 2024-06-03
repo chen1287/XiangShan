@@ -205,7 +205,6 @@ class RAS(implicit p: Parameters) extends BasePredictor { // RAS 类继承自 Ba
           ret := getCommitTop(currentSsp)
         }
       }
-
       ret
     }
 
@@ -241,8 +240,8 @@ class RAS(implicit p: Parameters) extends BasePredictor { // RAS 类继承自 Ba
 
     // 每次赋值都两个一起赋值一样的值，那最后一个驱动有什么意义吗
     when (io.redirect_valid && io.redirect_isCall) {  // 如果重定向有效且是CALL
-      writeBypassValidWire := true.B  // 写回绕过有效信号为真
-      writeBypassValid := true.B  // 写回绕过有效为真
+      writeBypassValidWire := true.B  // 写旁路有效信号为真
+      writeBypassValid := true.B  // 写旁路有效为真
     } .elsewhen (io.redirect_valid) { // 如果仅重定向有效
       // clear current top writeBypass if doing redirect
       writeBypassValidWire := false.B // 写回绕过有效信号为假
