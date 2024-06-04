@@ -29,7 +29,7 @@ class RASEntry()(implicit p: Parameters) extends XSBundle {
     def =/=(that: RASEntry) = this.retAddr =/= that.retAddr || this.ctr =/= that.ctr
 }
 // RASPtr类是一个循环队列指针，用于管理RAS中的条目。它包含两个字段：flag（标志位）和value（值）。flag用于标识指针是否有效，value用于存储指针的值。RASPtr类还定义了一个apply方法，用于创建RASPtr实例，以及一个inverse方法，用于创建一个与指定RASPtr实例相反的实例。
-class RASPtr(implicit p: Parameters) extends CircuularQueuePtr[RASPtr](
+class RASPtr(implicit p: Parameters) extends CircularQueuePtr[RASPtr](
   p => p(XSCoreParamsKey).RasSpecSize
 ){
 }
@@ -87,7 +87,7 @@ class RAS(implicit p: Parameters) extends BasePredictor { // RAS 类继承自 Ba
     }
   }
 
-
+  // rasSpecSize = 32, rasSize = 16
   class RASStack(rasSize: Int, rasSpecSize: Int) extends XSModule with HasCircularQueuePtrHelper {
     val io = IO(new Bundle {
       val spec_push_valid = Input(Bool()) //  进行PUSH操作
@@ -193,13 +193,13 @@ class RAS(implicit p: Parameters) extends BasePredictor { // RAS 类继承自 Ba
       if (allowBypass) {  // 如果允许数据旁路
         when (writeBypassValid) { // 开启数据旁路
           ret := writeBypassEntry // 返回旁路数据
-        } .elsewhen (TOSRinRange(currentTOSR, currentTOSW)) { // 如果TOSR在范围内
+        } .elsewhen (TOSRinRange(currentTOSR, currentTOSW)) { // 如果TOSR在范围外，即 spec 栈为空
           ret := spec_queue(currentTOSR.value)  // 返回预测栈顶数据
         } .otherwise {  // 如果TOSR不在范围内
           ret := getCommitTop(currentSsp) // 返回提交栈顶数据
         }
       } else {
-        when (TOSRinRange(currentTOSR, currentTOSW)) {  // 如果TOSR在范围内
+        when (TOSRinRange(currentTOSR, currentTOSW)) {  // 如果 spec 栈不为空
           ret := spec_queue(currentTOSR.value)
         } .otherwise {
           ret := getCommitTop(currentSsp)
@@ -244,11 +244,11 @@ class RAS(implicit p: Parameters) extends BasePredictor { // RAS 类继承自 Ba
       writeBypassValid := true.B  // 写旁路有效为真
     } .elsewhen (io.redirect_valid) { // 如果仅重定向有效
       // clear current top writeBypass if doing redirect
-      writeBypassValidWire := false.B // 写回绕过有效信号为假
-      writeBypassValid := false.B   // 写回绕过有效为假
+      writeBypassValidWire := false.B // 写旁路有效信号为假
+      writeBypassValid := false.B   // 写旁路有效为假
     } .elsewhen (io.s2_fire) {  // 没有重定向信号，但是s2阶段的预测结果已经准备好
-      writeBypassValidWire := io.spec_push_valid  // 写回绕过有效信号为push是否有效
-      writeBypassValid := io.spec_push_valid  // 写回绕过有效为push是否有效
+      writeBypassValidWire := io.spec_push_valid  // 写旁路有效信号为push是否有效
+      writeBypassValid := io.spec_push_valid  // 写旁路有效为push是否有效
     } .elsewhen (io.s3_fire) {  // s3阶段的预测结果已经准备好
       writeBypassValidWire := false.B
       writeBypassValid := false.B
@@ -453,7 +453,7 @@ class RAS(implicit p: Parameters) extends BasePredictor { // RAS 类继承自 Ba
       // spec sp and ctr should always be maintained
       when (topEntry.retAddr === retAddr && currentSctr < ctrMax) { // 压入的地址一样，即递归调用
         sctr := currentSctr + 1.U // 递归层数自增,这里没有压栈操作，为什么验证的时候压栈了
-      } .otherwise {  // 直接压入新的项，递归嵌套层数为0
+      } .otherwise {  // 理想栈直接压入新的项
         ssp := ptrInc(currentSsp)
         sctr := 0.U
       }
@@ -561,7 +561,7 @@ class RAS(implicit p: Parameters) extends BasePredictor { // RAS 类继承自 Ba
         nsp_update := nsp
       }
       // if ctr < max && topAddr == push addr, ++ctr, otherwise ++nsp
-      // 按照注释，topAddr == push addr的时候是不用push的，但是spec栈是进行了push的，是因为spec栈和commit栈不一样？
+      // 按照注释，topAddr == push addr的时候是不用push的，但是spec栈是进行了push的，是因为spec栈和commit栈不一样？（已确认是bug）
       when (commitTop.ctr < ctrMax && commitTop.retAddr === commit_push_addr) {
         commit_stack(nsp_update).ctr := commitTop.ctr + 1.U
         nsp := nsp_update
