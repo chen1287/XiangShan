@@ -107,7 +107,7 @@ trait BPUUtils extends HasXSParameter {
         Mux(taken, old + 1.S, old - 1.S)))
   }
 
-  def getFallThroughAddr(start: UInt, carry: Bool, pft: UInt) = {
+  def Addr(start: UInt, carry: Bool, pft: UInt) = {
     val higher = start.head(VAddrBits-log2Ceil(PredictWidth)-instOffsetBits)
     Cat(Mux(carry, higher+1.U, higher), pft, 0.U(instOffsetBits.W))
   }

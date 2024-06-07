@@ -193,9 +193,9 @@ class RAS(implicit p: Parameters) extends BasePredictor { // RAS 类继承自 Ba
       if (allowBypass) {  // 如果允许数据旁路
         when (writeBypassValid) { // 开启数据旁路
           ret := writeBypassEntry // 返回旁路数据
-        } .elsewhen (TOSRinRange(currentTOSR, currentTOSW)) { // 如果TOSR在范围外，即 spec 栈为空
+        } .elsewhen (TOSRinRange(currentTOSR, currentTOSW)) { 
           ret := spec_queue(currentTOSR.value)  // 返回预测栈顶数据
-        } .otherwise {  // 如果TOSR不在范围内
+        } .otherwise {  // 如果TOSR在范围外，即 spec 栈为空
           ret := getCommitTop(currentSsp) // 返回提交栈顶数据
         }
       } else {
@@ -338,6 +338,8 @@ class RAS(implicit p: Parameters) extends BasePredictor { // RAS 类继承自 Ba
       timingTop := getTop(popSsp, popSctr, popTOSR, popTOSW, false)
 
     } .elsewhen (io.spec_pop_valid) {
+
+
       // getTop using current Nos as TOSR
       // 使用当前的栈顶指针和栈计数器获取栈顶条目。可能是用于回滚？
       val popSsp = Wire(UInt(log2Up(rasSize).W))
@@ -360,6 +362,8 @@ class RAS(implicit p: Parameters) extends BasePredictor { // RAS 类继承自 Ba
       // 确定下一个时钟周期的栈顶，不需要旁路
       // We are deciding top for the next cycle, no need to use bypass here
       timingTop := getTop(popSsp, popSctr, popTOSR, popTOSW, false)
+
+
     } .elsewhen (realPush) {
       // just updating spec queue, cannot read from there
       timingTop := realWriteEntry
@@ -493,10 +497,13 @@ class RAS(implicit p: Parameters) extends BasePredictor { // RAS 类继承自 Ba
         // 但是这样的话为什么要把spec栈和commit栈的大小设计的这么大呢？
       }
     }
+
+  
     when (io.spec_pop_valid) {  // 预测栈pop
       specPop(ssp, sctr, TOSR, TOSW, topNos)
     }
 
+    
     // io.spec_pop_addr := Mux(writeBypassValid, writeBypassEntry.retAddr, topEntry.retAddr)
     
     io.spec_pop_addr := timingTop.retAddr // timing 到底是正在处理还是下一个周期？ 看代码实现应该是正在处理，但是他英文注释给的下一个周期
@@ -713,7 +720,7 @@ class RAS(implicit p: Parameters) extends BasePredictor { // RAS 类继承自 Ba
   stack.commit_push_valid := updateValid && update.is_call_taken
   stack.commit_pop_valid := updateValid && update.is_ret_taken
   stack.commit_push_addr := update.ftb_entry.getFallThrough(update.pc) + Mux(update.ftb_entry.last_may_be_rvi_call, 2.U, 0.U)
-  stack.commit_meta_TOSW := updateMeta.TOSW
+  stack.commit_meta_TOSW := updateMeta.TOSW 
   stack.commit_meta_TOSR := updateMeta.TOSR
   stack.commit_meta_ssp := updateMeta.ssp
   stack.commit_meta_sctr := updateMeta.sctr

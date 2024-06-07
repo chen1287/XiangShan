@@ -172,12 +172,12 @@ class FTBEntry(implicit p: Parameters) extends XSBundle with FTBParams with BPUU
 
   def getOffsetVec = VecInit(brSlots.map(_.offset) :+ tailSlot.offset)
   def isJal = !isJalr
-  def getFallThrough(pc: UInt, last_stage_entry: Option[Tuple2[FTBEntry, Bool]] = None) = {
+  def (pc: UInt, last_stage_entry: Option[Tuple2[FTBEntry, Bool]] = None) = {
     if (last_stage_entry.isDefined) {
       var stashed_carry = RegEnable(last_stage_entry.get._1.carry, last_stage_entry.get._2)
-      getFallThroughAddr(pc, stashed_carry, pftAddr)
+      Addr(pc, stashed_carry, pftAddr)
     } else {
-      getFallThroughAddr(pc, carry, pftAddr)
+      Addr(pc, carry, pftAddr)
     }
   }
 
